@@ -122,14 +122,18 @@ pub fn parse_tokens(tokens: &[Token], sources: &SourceStorage) -> Result<Vec<Ins
                 Instruction::IoControl(addr as u8)
             }
 
-            (_, None) => {
+            (_, Some(TokenKind::Number(_))) => {
+                let next_token = token_iter.next().unwrap();
                 diagnostics::emit_error(
-                    token.location,
-                    "unexpected end of file",
-                    [Label::new(token.location).with_color(Color::Red)],
+                    next_token.location,
+                    "address out of range",
+                    [Label::new(next_token.location)
+                        .with_color(Color::Red)
+                        .with_message("address must be in range 0x00-0xFF")],
                     None,
                     sources,
                 );
+
                 had_error = true;
                 continue;
             }
@@ -144,6 +148,18 @@ pub fn parse_tokens(tokens: &[Token], sources: &SourceStorage) -> Result<Vec<Ins
                     sources,
                 );
 
+                had_error = true;
+                continue;
+            }
+
+            (_, None) => {
+                diagnostics::emit_error(
+                    token.location,
+                    "unexpected end of file",
+                    [Label::new(token.location).with_color(Color::Red)],
+                    None,
+                    sources,
+                );
                 had_error = true;
                 continue;
             }
