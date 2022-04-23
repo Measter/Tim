@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     let tokens = scanner::lex_file(&contents, file_id, &mut interner, &sources)
         .map_err(|_| eyre!("Error lexing file: {}", &args.file))?;
 
-    let instructions = parser::parse_tokens(&tokens, &sources)
+    let instructions = parser::parse_tokens(&tokens, &interner, &sources)
         .map_err(|_| eyre!("Error parsing file: {}", &args.file))?;
 
     let output_file = File::create(&output)

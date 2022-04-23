@@ -12,7 +12,7 @@ use crate::{
     source_file::{FileId, SourceLocation, SourceStorage},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     NopO,
     Ld,
@@ -30,10 +30,13 @@ pub enum TokenKind {
     Rtn,
     Skz,
     NopF,
+    Equals,
+    Def,
+    Ident(Spur),
     Number(u64),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Token {
     pub kind: TokenKind,
     pub lexeme: Spur,
@@ -41,7 +44,7 @@ pub struct Token {
 }
 
 fn new_token_char(c: char) -> bool {
-    c.is_whitespace() || c == ';'
+    c.is_whitespace() || matches!(c, ';' | '=')
 }
 
 struct Scanner<'a> {
@@ -210,6 +213,12 @@ impl Scanner<'_> {
                 }
             }
 
+            ('=', _) => Some(Token {
+                kind: TokenKind::Equals,
+                lexeme: interner.get_or_intern(self.lexeme(input)),
+                location: SourceLocation::new(self.file_id, self.lexeme_range()),
+            }),
+
             _ => {
                 self.string_buf.clear();
                 self.string_buf.extend(ch.to_lowercase());
@@ -236,15 +245,10 @@ impl Scanner<'_> {
                     "rtn" => TokenKind::Rtn,
                     "skz" => TokenKind::Skz,
                     "nopf" => TokenKind::NopF,
+                    "#def" => TokenKind::Def,
                     _ => {
-                        diagnostics::emit_error(
-                            source_location,
-                            "unknown mnemonic",
-                            [Label::new(source_location).with_color(Color::Red)],
-                            None,
-                            sources,
-                        );
-                        return Err(());
+                        let ident_spur = interner.get_or_intern(self.lexeme(input));
+                        TokenKind::Ident(ident_spur)
                     }
                 };
 

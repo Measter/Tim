@@ -1,11 +1,16 @@
-use std::ops::Not;
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    iter::Peekable,
+    ops::Not,
+};
 
 use ariadne::{Color, Label};
+use lasso::{Rodeo, Spur};
 
 use crate::{
     diagnostics,
     scanner::{Token, TokenKind},
-    source_file::SourceStorage,
+    source_file::{SourceLocation, SourceStorage},
 };
 
 #[derive(Debug, Copy, Clone)]
@@ -51,21 +56,265 @@ impl Instruction {
     }
 }
 
-pub fn parse_tokens(tokens: &[Token], sources: &SourceStorage) -> Result<Vec<Instruction>, ()> {
+#[derive(Debug)]
+struct Define {
+    value: u64,
+    location: SourceLocation,
+}
+
+fn expect<'a>(
+    tokens: &mut impl Iterator<Item = &'a Token>,
+    kind_str: &str,
+    expected: fn(TokenKind) -> bool,
+    prev: Token,
+    interner: &Rodeo,
+    sources: &SourceStorage,
+) -> Result<Token, ()> {
+    match tokens.next() {
+        Some(token) if expected(token.kind) => Ok(*token),
+        Some(token) => {
+            diagnostics::emit_error(
+                token.location,
+                format!(
+                    "expected `{}`, found `{}`",
+                    kind_str,
+                    interner.resolve(&token.lexeme)
+                ),
+                [Label::new(token.location).with_color(Color::Red)],
+                None,
+                sources,
+            );
+            Err(())
+        }
+        None => {
+            diagnostics::emit_error(
+                prev.location,
+                "unexpected end of tokens",
+                [Label::new(prev.location).with_color(Color::Red)],
+                None,
+                sources,
+            );
+            Err(())
+        }
+    }
+}
+
+fn parse_define<'a>(
+    tokens: &mut Peekable<impl Iterator<Item = &'a Token>>,
+    keyword: Token,
+    defines: &mut HashMap<Spur, Define>,
+    interner: &Rodeo,
+    sources: &SourceStorage,
+) -> Result<(), ()> {
+    let name_token = expect(
+        tokens,
+        "ident",
+        |k| matches!(k, TokenKind::Ident(_)),
+        keyword,
+        interner,
+        sources,
+    )?;
+
+    let equals = expect(
+        tokens,
+        "=",
+        |k| k == TokenKind::Equals,
+        name_token,
+        interner,
+        sources,
+    )?;
+
+    let addr_token = expect(
+        tokens,
+        "number",
+        |k| matches!(k, TokenKind::Number(_)),
+        equals,
+        interner,
+        sources,
+    )?;
+
+    let addr = if let TokenKind::Number(addr) = addr_token.kind {
+        addr
+    } else {
+        unreachable!()
+    };
+
+    if addr > 0xFF {
+        diagnostics::emit_error(
+            addr_token.location,
+            "address out of range",
+            [Label::new(addr_token.location)
+                .with_color(Color::Red)
+                .with_message("address must be in range 0x00-0xFF")],
+            None,
+            sources,
+        );
+        return Err(());
+    }
+
+    let id = if let TokenKind::Ident(id) = name_token.kind {
+        id
+    } else {
+        unreachable!()
+    };
+
+    match defines.entry(id) {
+        Entry::Occupied(en) => {
+            let value: &Define = en.get();
+            diagnostics::emit_error(
+                name_token.location,
+                "symbol defined multiple times",
+                [
+                    Label::new(name_token.location)
+                        .with_color(Color::Red)
+                        .with_message("defined here"),
+                    Label::new(value.location)
+                        .with_color(Color::Cyan)
+                        .with_message("previously defined here"),
+                ],
+                None,
+                sources,
+            );
+            return Err(());
+        }
+        Entry::Vacant(new) => {
+            new.insert(Define {
+                value: addr,
+                location: name_token.location,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_addressable_instr<'a>(
+    tokens: &mut Peekable<impl Iterator<Item = &'a Token>>,
+    keyword: Token,
+    defines: &HashMap<Spur, Define>,
+    interner: &Rodeo,
+    sources: &SourceStorage,
+) -> Result<Instruction, ()> {
+    let addr_or_ident = expect(
+        tokens,
+        "address",
+        |k| matches!(k, TokenKind::Number(_) | TokenKind::Ident(_)),
+        keyword,
+        interner,
+        sources,
+    )?;
+
+    let addr = match addr_or_ident.kind {
+        TokenKind::Ident(id) => match defines.get(&id) {
+            Some(def) => def.value,
+            None => {
+                diagnostics::emit_error(
+                    addr_or_ident.location,
+                    "unknown ident",
+                    [Label::new(addr_or_ident.location).with_color(Color::Red)],
+                    None,
+                    sources,
+                );
+                return Err(());
+            }
+        },
+        TokenKind::Number(addr) => addr,
+        _ => unreachable!(),
+    };
+
+    if addr > 0xFF {
+        let mut labels = vec![Label::new(addr_or_ident.location)
+            .with_color(Color::Red)
+            .with_message("address must be in range 0x00-0xFF")];
+
+        if let TokenKind::Ident(id) = addr_or_ident.kind {
+            let def = &defines[&id];
+            labels.push(
+                Label::new(def.location)
+                    .with_color(Color::Cyan)
+                    .with_message("defined here"),
+            );
+        }
+
+        diagnostics::emit_error(
+            addr_or_ident.location,
+            "address out of range",
+            labels,
+            None,
+            sources,
+        );
+        return Err(());
+    }
+
+    let addr = addr as u8;
+
+    let instr = match keyword.kind {
+        TokenKind::Ld => Instruction::Load(addr),
+        TokenKind::Add => Instruction::Add(addr),
+        TokenKind::Sub => Instruction::Sub(addr),
+        TokenKind::Nand => Instruction::Nand(addr),
+        TokenKind::Or => Instruction::Or(addr),
+        TokenKind::Xor => Instruction::Xor(addr),
+        TokenKind::Sto => Instruction::Store(addr),
+        TokenKind::StoC => Instruction::StoreComplement(addr),
+        TokenKind::Ien => Instruction::InputEnable(addr),
+        TokenKind::Oen => Instruction::OutputEnable(addr),
+        TokenKind::Ioc => Instruction::IoControl(addr),
+        _ => unreachable!(),
+    };
+
+    Ok(instr)
+}
+
+pub fn parse_tokens(
+    tokens: &[Token],
+    interner: &Rodeo,
+    sources: &SourceStorage,
+) -> Result<Vec<Instruction>, ()> {
     let mut instructions = Vec::new();
     let mut had_error = false;
 
     let mut token_iter = tokens.iter().peekable();
+    let mut defines = HashMap::new();
 
     while let Some(token) = token_iter.next() {
-        let next_kind = token_iter.peek().map(|t| t.kind);
-        let instr = match (token.kind, next_kind) {
-            (TokenKind::NopO, _) => Instruction::NopO,
-            (TokenKind::One, _) => Instruction::One,
-            (TokenKind::Rtn, _) => Instruction::Return,
-            (TokenKind::Skz, _) => Instruction::SkipIfZero,
-            (TokenKind::NopF, _) => Instruction::NopF,
-            (TokenKind::Number(_), _) => {
+        let instr = match token.kind {
+            TokenKind::Def => {
+                if parse_define(&mut token_iter, *token, &mut defines, interner, sources).is_err() {
+                    had_error = true;
+                }
+
+                continue;
+            }
+
+            TokenKind::NopO => Instruction::NopO,
+            TokenKind::One => Instruction::One,
+            TokenKind::Rtn => Instruction::Return,
+            TokenKind::Skz => Instruction::SkipIfZero,
+            TokenKind::NopF => Instruction::NopF,
+
+            TokenKind::Ld
+            | TokenKind::Add
+            | TokenKind::Sub
+            | TokenKind::Nand
+            | TokenKind::Or
+            | TokenKind::Xor
+            | TokenKind::Sto
+            | TokenKind::StoC
+            | TokenKind::Ien
+            | TokenKind::Oen
+            | TokenKind::Ioc => {
+                match parse_addressable_instr(&mut token_iter, *token, &defines, interner, sources)
+                {
+                    Ok(i) => i,
+                    Err(_) => {
+                        had_error = true;
+                        continue;
+                    }
+                }
+            }
+
+            TokenKind::Number(_) => {
                 diagnostics::emit_error(
                     token.location,
                     "expected mnemonic, found address",
@@ -76,86 +325,21 @@ pub fn parse_tokens(tokens: &[Token], sources: &SourceStorage) -> Result<Vec<Ins
                 had_error = true;
                 continue;
             }
-
-            (TokenKind::Ld, Some(TokenKind::Number(addr @ 0x00..=0xFF))) => {
-                token_iter.next(); // Consume address.
-                Instruction::Load(addr as u8)
-            }
-            (TokenKind::Add, Some(TokenKind::Number(addr @ 0x00..=0xFF))) => {
-                token_iter.next(); // Consume address.
-                Instruction::Add(addr as u8)
-            }
-            (TokenKind::Sub, Some(TokenKind::Number(addr @ 0x00..=0xFF))) => {
-                token_iter.next(); // Consume address.
-                Instruction::Sub(addr as u8)
-            }
-            (TokenKind::Nand, Some(TokenKind::Number(addr @ 0x00..=0xFF))) => {
-                token_iter.next(); // Consume address.
-                Instruction::Nand(addr as u8)
-            }
-            (TokenKind::Or, Some(TokenKind::Number(addr @ 0x00..=0xFF))) => {
-                token_iter.next(); // Consume address.
-                Instruction::Or(addr as u8)
-            }
-            (TokenKind::Xor, Some(TokenKind::Number(addr @ 0x00..=0xFF))) => {
-                token_iter.next(); // Consume address.
-                Instruction::Xor(addr as u8)
-            }
-            (TokenKind::Sto, Some(TokenKind::Number(addr @ 0x00..=0xFF))) => {
-                token_iter.next(); // Consume address.
-                Instruction::Store(addr as u8)
-            }
-            (TokenKind::StoC, Some(TokenKind::Number(addr @ 0x00..=0xFF))) => {
-                token_iter.next(); // Consume address.
-                Instruction::StoreComplement(addr as u8)
-            }
-            (TokenKind::Ien, Some(TokenKind::Number(addr @ 0x00..=0xFF))) => {
-                token_iter.next(); // Consume address.
-                Instruction::InputEnable(addr as u8)
-            }
-            (TokenKind::Oen, Some(TokenKind::Number(addr @ 0x00..=0xFF))) => {
-                token_iter.next(); // Consume address.
-                Instruction::OutputEnable(addr as u8)
-            }
-            (TokenKind::Ioc, Some(TokenKind::Number(addr @ 0x00..=0xFF))) => {
-                token_iter.next(); // Consume address.
-                Instruction::IoControl(addr as u8)
-            }
-
-            (_, Some(TokenKind::Number(_))) => {
-                let next_token = token_iter.next().unwrap();
-                diagnostics::emit_error(
-                    next_token.location,
-                    "address out of range",
-                    [Label::new(next_token.location)
-                        .with_color(Color::Red)
-                        .with_message("address must be in range 0x00-0xFF")],
-                    None,
-                    sources,
-                );
-
-                had_error = true;
-                continue;
-            }
-
-            (_, Some(_)) => {
-                let next_token = token_iter.next().unwrap();
-                diagnostics::emit_error(
-                    next_token.location,
-                    "expected address, found mnemonic",
-                    [Label::new(next_token.location).with_color(Color::Red)],
-                    None,
-                    sources,
-                );
-
-                had_error = true;
-                continue;
-            }
-
-            (_, None) => {
+            TokenKind::Equals => {
                 diagnostics::emit_error(
                     token.location,
-                    "unexpected end of file",
+                    "expected mnemonic, found `=`",
+                    [Label::new(token.location).with_color(Color::Red)],
+                    None,
+                    sources,
+                );
+                had_error = true;
+                continue;
+            }
+            TokenKind::Ident(_) => {
+                diagnostics::emit_error(
+                    token.location,
+                    "expected mnemonic, found `ident`",
                     [Label::new(token.location).with_color(Color::Red)],
                     None,
                     sources,

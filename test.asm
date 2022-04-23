@@ -4,21 +4,26 @@
 ;  - 0x82: RR
 ;  - 0x83: !RR
 
+#DEF MMIO_ZERO = 0x80
+#DEF MMIO_ONE = 0x81
+#DEF MMIO_RR = 0x82
+#DEF MMIO_RRQ = 0x83
+
 ; Initialize the CPU
-IEN 0x80    ; Enable input
-OEN 0x80    ; Enable output
-ONE         ; Result ALU
-LD 0x81     ; Load 0 into RR
+IEN MMIO_ONE    ; Enable input
+OEN MMIO_ONE    ; Enable output
+ONE             ; Result ALU
+LD MMIO_ZERO    ; Load 0 into MMIO_RR
 
-LD 0x80     ; Load Op1 Bit1 into RR
-ADD 0x80    ; Add Op2 Bit1 to RR
-STOC 0x00   ; Store !RR to RAM
+LD MMIO_ONE     ; Load Op1 Bit1 into MMIO_RR
+ADD MMIO_ONE    ; Add Op2 Bit1 to MMIO_RR
+STOC 0x00       ; Store !MMIO_RR to RAM
 
-LD 0x81     ; Load 0 into RR
-ADD 0x81    ; Add 0 to RR (move Carry to RR)
-STO 0x1     ; Store RR to RAM
+LD MMIO_ZERO    ; Load 0 into MMIO_RR
+ADD MMIO_ZERO   ; Add 0 to MMIO_RR (move Carry to RR)
+STO 0x1         ; Store MMIO_RR to RAM
 
-NAND 0x80   ; NAND RR with 1
-OEN 0x82    ; Disable OEN if RR is 0
-LD 0x80
-STO 0x3     ; Save to RAM. Write should be suppressed
+NAND MMIO_ONE   ; NAND MMIO_RR with 1
+OEN MMIO_RR     ; Disable OEN if RR is 0
+LD MMIO_ONE
+STO 0x3         ; Save to RAM. Write should be suppressed
