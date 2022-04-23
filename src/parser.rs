@@ -149,7 +149,6 @@ fn parse_define<'a>(
             None,
             sources,
         );
-        return Err(());
     }
 
     let id = if let TokenKind::Ident(id) = name_token.kind {
@@ -218,33 +217,21 @@ fn parse_addressable_instr<'a>(
                 return Err(());
             }
         },
-        TokenKind::Number(addr) => addr,
+        TokenKind::Number(addr @ 0x00..=0xFF) => addr,
+        TokenKind::Number(_) => {
+            diagnostics::emit_error(
+                addr_or_ident.location,
+                "address out of range",
+                [Label::new(addr_or_ident.location)
+                    .with_color(Color::Red)
+                    .with_message("address must be in range 0x00-0xFF")],
+                None,
+                sources,
+            );
+            return Err(());
+        }
         _ => unreachable!(),
     };
-
-    if addr > 0xFF {
-        let mut labels = vec![Label::new(addr_or_ident.location)
-            .with_color(Color::Red)
-            .with_message("address must be in range 0x00-0xFF")];
-
-        if let TokenKind::Ident(id) = addr_or_ident.kind {
-            let def = &defines[&id];
-            labels.push(
-                Label::new(def.location)
-                    .with_color(Color::Cyan)
-                    .with_message("defined here"),
-            );
-        }
-
-        diagnostics::emit_error(
-            addr_or_ident.location,
-            "address out of range",
-            labels,
-            None,
-            sources,
-        );
-        return Err(());
-    }
 
     let addr = addr as u8;
 
