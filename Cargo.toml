@@ -1,0 +1,13 @@
+[package]
+name = "tim"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ariadne = "0.1.5"
+byteorder = "1.4.3"
+clap = { version = "3.1.12", features = ["derive"] }
+color-eyre = "0.6.1"
+lasso = "0.6.0"
