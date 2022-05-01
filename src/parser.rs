@@ -301,32 +301,16 @@ pub fn parse_tokens(
                 }
             }
 
-            TokenKind::Number(_) => {
+            _ => {
+                let msg = match token.kind {
+                    TokenKind::Number(_) => "number",
+                    TokenKind::Ident(_) => "ident",
+                    _ => interner.resolve(&token.lexeme),
+                };
+
                 diagnostics::emit_error(
                     token.location,
-                    "expected mnemonic, found address",
-                    [Label::new(token.location).with_color(Color::Red)],
-                    None,
-                    sources,
-                );
-                had_error = true;
-                continue;
-            }
-            TokenKind::Equals => {
-                diagnostics::emit_error(
-                    token.location,
-                    "expected mnemonic, found `=`",
-                    [Label::new(token.location).with_color(Color::Red)],
-                    None,
-                    sources,
-                );
-                had_error = true;
-                continue;
-            }
-            TokenKind::Ident(_) => {
-                diagnostics::emit_error(
-                    token.location,
-                    "expected mnemonic, found `ident`",
+                    format!("expected mnemonic, found `{}`", msg),
                     [Label::new(token.location).with_color(Color::Red)],
                     None,
                     sources,
