@@ -32,6 +32,11 @@ pub enum TokenKind {
     NopF,
     Equals,
     Def,
+    Repeat,
+    In,
+    Do,
+    End,
+    DotDot,
     Ident(Spur),
     Number(u64),
 }
@@ -44,7 +49,7 @@ pub struct Token {
 }
 
 fn new_token_char(c: char) -> bool {
-    c.is_whitespace() || matches!(c, ';' | '=')
+    c.is_whitespace() || matches!(c, ';' | '=' | '.')
 }
 
 struct Scanner<'a> {
@@ -219,6 +224,15 @@ impl Scanner<'_> {
                 location: SourceLocation::new(self.file_id, self.lexeme_range()),
             }),
 
+            ('.', '.') => {
+                self.advance(); // Consume second '.'
+                Some(Token {
+                    kind: TokenKind::DotDot,
+                    lexeme: interner.get_or_intern(self.lexeme(input)),
+                    location: SourceLocation::new(self.file_id, self.lexeme_range()),
+                })
+            }
+
             _ => {
                 self.string_buf.clear();
                 self.string_buf.extend(ch.to_lowercase());
@@ -246,6 +260,10 @@ impl Scanner<'_> {
                     "skz" => TokenKind::Skz,
                     "nopf" => TokenKind::NopF,
                     "#def" => TokenKind::Def,
+                    "#rep" => TokenKind::Repeat,
+                    "do" => TokenKind::Do,
+                    "end" => TokenKind::End,
+                    "in" => TokenKind::In,
                     _ => {
                         let ident_spur = interner.get_or_intern(self.lexeme(input));
                         TokenKind::Ident(ident_spur)

@@ -4,7 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use byteorder::{BigEndian, WriteBytesExt};
+use ariadne::{Color, Label};
+use byteorder::WriteBytesExt;
 use clap::Parser;
 use color_eyre::{eyre::eyre, eyre::Context, Result};
 use lasso::Rodeo;
@@ -45,14 +46,36 @@ fn main() -> Result<()> {
     let instructions = parser::parse_tokens(&tokens, &interner, &sources)
         .map_err(|_| eyre!("Error parsing file: {}", &args.file))?;
 
+    let expanded = parser::expand_repetitions(instructions);
+    let evaluated = parser::evaluate_expressions(&expanded, &interner, &sources)
+        .map_err(|_| eyre!("Error evaluating expressions"))?;
+
     let output_file = File::create(&output)
         .with_context(|| eyre!("Failed to create file: {}", output.display()))?;
     let mut writer = BufWriter::new(output_file);
 
-    for instr in instructions {
-        let encoded = instr.encode();
+    for instr in evaluated {
+        let opcode = instr.kind.opcode();
         writer
-            .write_u16::<BigEndian>(encoded)
+            .write_u8(opcode)
+            .with_context(|| eyre!("Failed to write to file: {}", output.display()))?;
+
+        let value = match instr.kind.value() {
+            value @ 0..=255 => value as u8,
+            value => {
+                diagnostics::emit_error(
+                    instr.location,
+                    format!("value `{}` is out of bounds", value),
+                    [Label::new(instr.location).with_color(Color::Red)],
+                    None,
+                    &sources,
+                );
+                continue;
+            }
+        };
+
+        writer
+            .write_u8(value)
             .with_context(|| eyre!("Failed to write to file: {}", output.display()))?;
     }
 
