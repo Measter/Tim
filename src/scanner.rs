@@ -25,6 +25,7 @@ pub enum TokenKind {
     In,
     Ioc,
     Ld,
+    Minus,
     Nand,
     NopF,
     NopO,
@@ -32,9 +33,14 @@ pub enum TokenKind {
     Oen,
     One,
     Or,
+    ParenOpen,
+    ParenClose,
+    Plus,
     Repeat,
     Rtn,
     Skz,
+    Slash,
+    Star,
     Sto,
     StoC,
     Sub,
@@ -49,7 +55,7 @@ pub struct Token {
 }
 
 fn new_token_char(c: char) -> bool {
-    c.is_whitespace() || matches!(c, ';' | '=' | '.')
+    c.is_whitespace() || matches!(c, ';' | '=' | '.' | '-' | '+' | '/' | '*' | '(' | ')')
 }
 
 struct Scanner<'a> {
@@ -220,6 +226,42 @@ impl Scanner<'_> {
 
             ('=', _) => Some(Token {
                 kind: TokenKind::Equals,
+                lexeme: interner.get_or_intern(self.lexeme(input)),
+                location: SourceLocation::new(self.file_id, self.lexeme_range()),
+            }),
+
+            ('+', _) => Some(Token {
+                kind: TokenKind::Plus,
+                lexeme: interner.get_or_intern(self.lexeme(input)),
+                location: SourceLocation::new(self.file_id, self.lexeme_range()),
+            }),
+
+            ('-', _) => Some(Token {
+                kind: TokenKind::Minus,
+                lexeme: interner.get_or_intern(self.lexeme(input)),
+                location: SourceLocation::new(self.file_id, self.lexeme_range()),
+            }),
+
+            ('/', _) => Some(Token {
+                kind: TokenKind::Slash,
+                lexeme: interner.get_or_intern(self.lexeme(input)),
+                location: SourceLocation::new(self.file_id, self.lexeme_range()),
+            }),
+
+            ('*', _) => Some(Token {
+                kind: TokenKind::Star,
+                lexeme: interner.get_or_intern(self.lexeme(input)),
+                location: SourceLocation::new(self.file_id, self.lexeme_range()),
+            }),
+
+            ('(', _) => Some(Token {
+                kind: TokenKind::ParenOpen,
+                lexeme: interner.get_or_intern(self.lexeme(input)),
+                location: SourceLocation::new(self.file_id, self.lexeme_range()),
+            }),
+
+            (')', _) => Some(Token {
+                kind: TokenKind::ParenClose,
                 lexeme: interner.get_or_intern(self.lexeme(input)),
                 location: SourceLocation::new(self.file_id, self.lexeme_range()),
             }),
