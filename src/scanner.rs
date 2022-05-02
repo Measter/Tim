@@ -47,6 +47,16 @@ pub enum TokenKind {
     Xor,
 }
 
+impl TokenKind {
+    pub fn is_expression_token(&self) -> bool {
+        use TokenKind::*;
+        matches!(
+            self,
+            Plus | Minus | Slash | Star | ParenOpen | ParenClose | Ident(_) | Number(_)
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Token {
     pub kind: TokenKind,

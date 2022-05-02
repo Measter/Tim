@@ -1,7 +1,7 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
     iter::Peekable,
-    ops::{Not, Range},
+    ops::{Add, Div, Mul, Not, Range, Sub},
 };
 
 use ariadne::{Color, Label};
@@ -192,14 +192,58 @@ fn expect<'a>(
     }
 }
 
+fn parse_expression<'a>(
+    tokens_iter: &mut Peekable<impl Iterator<Item = (usize, &'a Token)>>,
+    tokens: &[Token],
+    keyword: Token,
+    interner: &Rodeo,
+    sources: &SourceStorage,
+) -> Result<Expression, ()> {
+    let start_idx = match tokens_iter.next() {
+        Some((idx, token)) if token.kind.is_expression_token() => idx,
+        Some((_, token)) => {
+            diagnostics::emit_error(
+                token.location,
+                format!(
+                    "expected maths expression, found `{}`",
+                    interner.resolve(&token.lexeme)
+                ),
+                [Label::new(token.location).with_color(Color::Red)],
+                None,
+                sources,
+            );
+            return Err(());
+        }
+        None => {
+            diagnostics::end_of_file(keyword.location, sources);
+            return Err(());
+        }
+    };
+
+    let mut last_token_idx = start_idx;
+    while let Some(&(idx, token)) = tokens_iter.peek() {
+        if !token.kind.is_expression_token() {
+            break;
+        }
+
+        tokens_iter.next();
+        last_token_idx = idx;
+    }
+
+    let expression = &tokens[start_idx..=last_token_idx];
+
+    Ok(Expression::Expression(expression.to_owned()))
+}
+
 fn parse_define<'a>(
-    tokens: &mut Peekable<impl Iterator<Item = (usize, &'a Token)>>,
+    tokens_iter: &mut Peekable<impl Iterator<Item = (usize, &'a Token)>>,
+    tokens: &[Token],
     keyword: Token,
     interner: &Rodeo,
     sources: &SourceStorage,
 ) -> Result<Instruction, ()> {
     let name_token = expect(
-        tokens,
+        tokens_iter,
         "ident",
         |k| matches!(k, TokenKind::Ident(_)),
         keyword,
@@ -208,7 +252,7 @@ fn parse_define<'a>(
     )?;
 
     let equals = expect(
-        tokens,
+        tokens_iter,
         "=",
         |k| k == TokenKind::Equals,
         name_token,
@@ -216,24 +260,11 @@ fn parse_define<'a>(
         sources,
     )?;
 
-    let addr_token = expect(
-        tokens,
-        "number",
-        |k| matches!(k, TokenKind::Number(_)),
-        equals,
-        interner,
-        sources,
-    )?;
-
-    let addr = if let TokenKind::Number(addr) = addr_token.kind {
-        addr
-    } else {
-        unreachable!()
-    };
+    let expr = parse_expression(tokens_iter, tokens, equals, interner, sources)?;
 
     Ok(Instruction {
-        kind: InstructionKind::Define(name_token, Expression::Literal(addr)),
-        location: keyword.location.merge(addr_token.location),
+        kind: InstructionKind::Define(name_token, expr),
+        location: keyword.location,
     })
 }
 
@@ -377,44 +408,32 @@ fn parse_repetition<'a>(
 }
 
 fn parse_addressable_instr<'a>(
-    tokens: &mut Peekable<impl Iterator<Item = (usize, &'a Token)>>,
+    tokens_iter: &mut Peekable<impl Iterator<Item = (usize, &'a Token)>>,
+    tokens: &[Token],
     keyword: Token,
     interner: &Rodeo,
     sources: &SourceStorage,
 ) -> Result<Instruction, ()> {
-    let addr_or_ident = expect(
-        tokens,
-        "address",
-        |k| matches!(k, TokenKind::Number(_) | TokenKind::Ident(_)),
-        keyword,
-        interner,
-        sources,
-    )?;
-
-    let addr = match addr_or_ident.kind {
-        TokenKind::Ident(_) => Expression::Expression(vec![addr_or_ident]),
-        TokenKind::Number(addr) => Expression::Literal(addr),
-        _ => unreachable!(),
-    };
+    let expr = parse_expression(tokens_iter, tokens, keyword, interner, sources)?;
 
     let instr = match keyword.kind {
-        TokenKind::Ld => InstructionKind::Load(addr),
-        TokenKind::Add => InstructionKind::Add(addr),
-        TokenKind::Sub => InstructionKind::Sub(addr),
-        TokenKind::Nand => InstructionKind::Nand(addr),
-        TokenKind::Or => InstructionKind::Or(addr),
-        TokenKind::Xor => InstructionKind::Xor(addr),
-        TokenKind::Sto => InstructionKind::Store(addr),
-        TokenKind::StoC => InstructionKind::StoreComplement(addr),
-        TokenKind::Ien => InstructionKind::InputEnable(addr),
-        TokenKind::Oen => InstructionKind::OutputEnable(addr),
-        TokenKind::Ioc => InstructionKind::IoControl(addr),
+        TokenKind::Ld => InstructionKind::Load(expr),
+        TokenKind::Add => InstructionKind::Add(expr),
+        TokenKind::Sub => InstructionKind::Sub(expr),
+        TokenKind::Nand => InstructionKind::Nand(expr),
+        TokenKind::Or => InstructionKind::Or(expr),
+        TokenKind::Xor => InstructionKind::Xor(expr),
+        TokenKind::Sto => InstructionKind::Store(expr),
+        TokenKind::StoC => InstructionKind::StoreComplement(expr),
+        TokenKind::Ien => InstructionKind::InputEnable(expr),
+        TokenKind::Oen => InstructionKind::OutputEnable(expr),
+        TokenKind::Ioc => InstructionKind::IoControl(expr),
         _ => unreachable!(),
     };
 
     Ok(Instruction {
         kind: instr,
-        location: keyword.location.merge(addr_or_ident.location),
+        location: keyword.location,
     })
 }
 
@@ -430,13 +449,15 @@ pub fn parse_tokens(
 
     while let Some((_, token)) = token_iter.next() {
         let instr = match token.kind {
-            TokenKind::Def => match parse_define(&mut token_iter, *token, interner, sources) {
-                Ok(i) => i,
-                Err(_) => {
-                    had_error = true;
-                    continue;
+            TokenKind::Def => {
+                match parse_define(&mut token_iter, tokens, *token, interner, sources) {
+                    Ok(i) => i,
+                    Err(_) => {
+                        had_error = true;
+                        continue;
+                    }
                 }
-            },
+            }
 
             TokenKind::Repeat => {
                 match parse_repetition(&mut token_iter, tokens, *token, interner, sources) {
@@ -480,7 +501,7 @@ pub fn parse_tokens(
             | TokenKind::Ien
             | TokenKind::Oen
             | TokenKind::Ioc => {
-                match parse_addressable_instr(&mut token_iter, *token, interner, sources) {
+                match parse_addressable_instr(&mut token_iter, tokens, *token, interner, sources) {
                     Ok(i) => i,
                     Err(_) => {
                         had_error = true;
@@ -554,35 +575,185 @@ pub fn expand_repetitions(mut instructions: Vec<Instruction>) -> Vec<Instruction
     instructions
 }
 
+fn operator_prec(kind: TokenKind) -> u8 {
+    match kind {
+        TokenKind::Minus | TokenKind::Plus => 1,
+        TokenKind::Slash | TokenKind::Star => 2,
+        _ => unreachable!(),
+    }
+}
+
+#[derive(Debug)]
+enum RpnOp {
+    Number(u64),
+    Function(Token),
+}
+
+impl From<u64> for RpnOp {
+    fn from(v: u64) -> Self {
+        RpnOp::Number(v)
+    }
+}
+
+impl From<Token> for RpnOp {
+    fn from(t: Token) -> Self {
+        RpnOp::Function(t)
+    }
+}
+
 fn evaluate_expression(
     defines: &HashMap<Spur, Define>,
     value: &Expression,
+    interner: &Rodeo,
     sources: &SourceStorage,
 ) -> Result<u64, ()> {
     match value {
         Expression::Literal(val) => Ok(*val),
         Expression::Expression(expr) => {
-            for e in expr {
-                match e.kind {
-                    TokenKind::Ident(id) => match defines.get(&id) {
-                        Some(value) => return Ok(value.value),
-                        None => {
-                            diagnostics::emit_error(
-                                e.location,
-                                "symbol not defined",
-                                [Label::new(e.location).with_color(Color::Red)],
-                                None,
-                                sources,
-                            );
-                            return Err(());
+            let mut output: Vec<RpnOp> = Vec::new();
+            let mut op_stack: Vec<Token> = Vec::new();
+            let mut parens_balance: u8 = 0;
+
+            for token in expr {
+                match token.kind {
+                    TokenKind::Number(num) => output.push(num.into()),
+                    TokenKind::Ident(id) => {
+                        let num = match defines.get(&id) {
+                            Some(def) => def.value,
+                            None => {
+                                diagnostics::emit_error(
+                                    token.location,
+                                    format!(
+                                        "symbol `{}` not defined",
+                                        interner.resolve(&token.lexeme)
+                                    ),
+                                    [Label::new(token.location).with_color(Color::Red)],
+                                    None,
+                                    sources,
+                                );
+                                return Err(());
+                            }
+                        };
+
+                        output.push(num.into());
+                    }
+                    TokenKind::ParenOpen => {
+                        op_stack.push(*token);
+                        parens_balance += 1;
+                    }
+                    TokenKind::ParenClose => {
+                        parens_balance = match parens_balance.checked_sub(1) {
+                            Some(v) => v,
+                            None => {
+                                diagnostics::emit_error(
+                                    token.location,
+                                    "unbalanced parenthesis",
+                                    [Label::new(token.location).with_color(Color::Red)],
+                                    None,
+                                    sources,
+                                );
+                                return Err(());
+                            }
+                        };
+
+                        while let Some(op) = op_stack.pop() {
+                            if op.kind == TokenKind::ParenOpen {
+                                break;
+                            }
+                            output.push(op.into());
                         }
-                    },
-                    TokenKind::Number(val) => return Ok(val),
-                    _ => panic!("unexpected token kind: {:?}", e),
+                    }
+                    TokenKind::Minus | TokenKind::Plus | TokenKind::Star | TokenKind::Slash => {
+                        if matches!(op_stack.last(), Some(op) if op.kind != TokenKind::ParenOpen && operator_prec(token.kind) <= operator_prec(op.kind))
+                        {
+                            let prev_token = op_stack.pop().unwrap();
+                            output.push(prev_token.into());
+                        }
+
+                        op_stack.push(*token);
+                    }
+                    _ => unreachable!(),
                 }
             }
 
-            panic!("empty expression");
+            if parens_balance != 0 {
+                let start_loc = expr[0].location;
+                let end_loc = expr.last().unwrap().location;
+                let span = start_loc.merge(end_loc);
+                diagnostics::emit_error(
+                    span,
+                    "unbalanced parethesis",
+                    [Label::new(span).with_color(Color::Red)],
+                    None,
+                    sources,
+                );
+                return Err(());
+            }
+
+            for op in op_stack.drain(..).rev() {
+                output.push(op.into());
+            }
+
+            let mut evaluation_stack: Vec<u64> = Vec::new();
+            for rpn_op in output {
+                match rpn_op {
+                    RpnOp::Number(num) => evaluation_stack.push(num),
+                    RpnOp::Function(token) => {
+                        let b = match evaluation_stack.pop() {
+                            Some(a) => a,
+                            None => {
+                                diagnostics::emit_error(
+                                    token.location,
+                                    "missing operand",
+                                    [Label::new(token.location).with_color(Color::Red)],
+                                    None,
+                                    sources,
+                                );
+                                return Err(());
+                            }
+                        };
+                        let a = match evaluation_stack.pop() {
+                            Some(a) => a,
+                            None => {
+                                diagnostics::emit_error(
+                                    token.location,
+                                    "missing operand",
+                                    [Label::new(token.location).with_color(Color::Red)],
+                                    None,
+                                    sources,
+                                );
+                                return Err(());
+                            }
+                        };
+
+                        let func = match token.kind {
+                            TokenKind::Plus => u64::add,
+                            TokenKind::Minus => u64::sub,
+                            TokenKind::Slash => u64::div,
+                            TokenKind::Star => u64::mul,
+                            _ => unreachable!(),
+                        };
+
+                        evaluation_stack.push(func(a, b));
+                    }
+                }
+            }
+
+            if evaluation_stack.len() != 1 {
+                let start_loc = expr[0].location;
+                let end_loc = expr.last().unwrap().location;
+                let span = start_loc.merge(end_loc);
+                diagnostics::emit_error(
+                    span,
+                    "invalid expression",
+                    [Label::new(span).with_color(Color::Red)],
+                    None,
+                    sources,
+                );
+                return Err(());
+            }
+
+            Ok(evaluation_stack[0])
         }
     }
 }
@@ -599,7 +770,7 @@ pub fn evaluate_expressions(
     for instr in instructions {
         let expr = match &instr.kind {
             InstructionKind::Define(id, value) => {
-                let value = match evaluate_expression(&defines, value, sources) {
+                let value = match evaluate_expression(&defines, value, interner, sources) {
                     Ok(val) => val,
                     Err(_) => {
                         had_error = true;
@@ -672,7 +843,7 @@ pub fn evaluate_expressions(
             InstructionKind::Repeat { .. } => panic!("Repeat encountered."),
         };
 
-        let value = match evaluate_expression(&defines, expr, sources) {
+        let value = match evaluate_expression(&defines, expr, interner, sources) {
             Ok(value) => value,
             Err(_) => {
                 had_error = true;
